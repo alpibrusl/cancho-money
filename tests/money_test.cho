@@ -1,0 +1,292 @@
+import std.buffer;
+import std.bytes;
+import std.test;
+import money;
+
+fn eur() -> [] int {
+    return money.currency_of("EUR");
+}
+
+fn jpy() -> [] int {
+    return money.currency_of("JPY");
+}
+
+fn kwd() -> [] int {
+    return money.currency_of("KWD");
+}
+
+// Parse `text` in `currency` and answer its minor units; traps if it is refused, so a test that expects a value says so.
+fn minor[&t](text: &t [byte], currency: int) -> [] int {
+    let (m, code) = money.parse(text, currency);
+    test.assert_eq(code, 0);
+    return m.minor;
+}
+
+// The refusal for `text`.
+fn refusal[&t](text: &t [byte], currency: int) -> [] int {
+    let (m, code) = money.parse(text, currency);
+    return code;
+}
+
+fn test_currencies_are_three_uppercase_letters() -> [] int {
+    test.assert_eq(eur(), money.pack('E', 'U', 'R'));
+    test.assert_eq(money.currency_of("eur"), 0 - 1);
+    test.assert_eq(money.currency_of("EU"), 0 - 1);
+    test.assert_eq(money.currency_of("EURO"), 0 - 1);
+    test.assert_eq(money.currency_of("E1R"), 0 - 1);
+    test.assert_eq(money.currency_of(""), 0 - 1);
+    test.assert_eq(money.letter(eur(), 0), 69);
+    test.assert_eq(money.letter(eur(), 2), 82);
+    return 0;
+}
+
+fn test_the_exponent_follows_iso_4217() -> [] int {
+    test.assert_eq(money.exponent(eur()), 2);
+    test.assert_eq(money.exponent(money.currency_of("USD")), 2);
+    test.assert_eq(money.exponent(jpy()), 0);
+    test.assert_eq(money.exponent(money.currency_of("KRW")), 0);
+    test.assert_eq(money.exponent(kwd()), 3);
+    test.assert_eq(money.exponent(money.currency_of("BHD")), 3);
+    test.assert_eq(money.exponent(money.currency_of("CLF")), 4);
+    // Not in the table: the ISO default.
+    test.assert_eq(money.exponent(money.currency_of("ZZZ")), 2);
+    return 0;
+}
+
+fn test_amounts_parse_exactly() -> [] int {
+    test.assert_eq(minor("42.15", eur()), 4215);
+    test.assert_eq(minor("0.05", eur()), 5);
+    test.assert_eq(minor("10", eur()), 1000);
+    test.assert_eq(minor("1.5", eur()), 150);
+    test.assert_eq(minor("-3.20", eur()), 0 - 320);
+    test.assert_eq(minor("-0.00", eur()), 0);
+    test.assert_eq(minor("007.10", eur()), 710);
+    // Zero fractional digits for yen; three for dinars.
+    test.assert_eq(minor("1500", jpy()), 1500);
+    test.assert_eq(minor("1.250", kwd()), 1250);
+    test.assert_eq(minor("1.2", kwd()), 1200);
+    // Extra fractional digits are fine only if they are zeros.
+    test.assert_eq(minor("10.670", eur()), 1067);
+    test.assert_eq(minor("10.6700000", eur()), 1067);
+    test.assert_eq(minor("5.000", jpy()), 5);
+    return 0;
+}
+
+fn test_a_value_is_never_rounded_away() -> [] int {
+    test.assert_eq(refusal("10.675", eur()), money.r_precision());
+    test.assert_eq(refusal("10.601", eur()), money.r_precision());
+    test.assert_eq(refusal("5.5", jpy()), money.r_precision());
+    test.assert_eq(refusal("1.2345", kwd()), money.r_precision());
+    return 0;
+}
+
+fn test_what_is_not_an_amount_is_malformed() -> [] int {
+    test.assert_eq(refusal("", eur()), money.r_malformed());
+    test.assert_eq(refusal("-", eur()), money.r_malformed());
+    test.assert_eq(refusal(".5", eur()), money.r_malformed());
+    test.assert_eq(refusal("5.", eur()), money.r_malformed());
+    test.assert_eq(refusal("1,5", eur()), money.r_malformed());
+    test.assert_eq(refusal("1.2.3", eur()), money.r_malformed());
+    test.assert_eq(refusal("12a", eur()), money.r_malformed());
+    test.assert_eq(refusal(" 12", eur()), money.r_malformed());
+    test.assert_eq(refusal("+12", eur()), money.r_malformed());
+    test.assert_eq(refusal("1e3", eur()), money.r_malformed());
+    test.assert_eq(refusal("--1", eur()), money.r_malformed());
+    test.assert_eq(refusal("12", 0 - 1), money.r_bad_currency());
+    return 0;
+}
+
+fn test_an_amount_past_an_int_is_refused_not_wrapped() -> [] int {
+    test.assert_eq(minor("92233720368547758.07", eur()), money.max_int());
+    test.assert_eq(refusal("92233720368547758.08", eur()), money.r_overflow());
+    test.assert_eq(refusal("99999999999999999999.99", eur()), money.r_overflow());
+    test.assert_eq(refusal("9223372036854775808", jpy()), money.r_overflow());
+    // A fraction on a currency without one is lost value before it is overflow.
+    test.assert_eq(refusal("922337203685477580.7", jpy()), money.r_precision());
+    test.assert_eq(minor("9223372036854775807", jpy()), money.max_int());
+    return 0;
+}
+
+fn test_format_is_the_inverse_of_parse[&h](heap: &!h Heap) -> [heap] int {
+    let cases = 12;
+    var i = 0;
+    while i < cases {
+        var text = "0.00";
+        var cur = eur();
+        if i == 1 {
+            text = "42.15";
+        } else if i == 2 {
+            text = "-3.20";
+        } else if i == 3 {
+            text = "1000000.01";
+        } else if i == 4 {
+            text = "0.05";
+        } else if i == 5 {
+            text = "-0.05";
+        } else if i == 6 {
+            text = "1500";
+            cur = jpy();
+        } else if i == 7 {
+            text = "-1";
+            cur = jpy();
+        } else if i == 8 {
+            text = "1.250";
+            cur = kwd();
+        } else if i == 9 {
+            text = "0.001";
+            cur = kwd();
+        } else if i == 10 {
+            text = "-12.005";
+            cur = kwd();
+        } else if i == 11 {
+            text = "10.00";
+        }
+        let (m, code) = money.parse(text, cur);
+        test.assert_eq(code, 0);
+        let out = money.format(heap, m);
+        borrow out as &r in {
+            test.assert(bytes.equal(buffer.bytes(r), text));
+        }
+        buffer.drop(heap, out);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_formatting_pads_the_fraction[&h](heap: &!h Heap) -> [heap] int {
+    let five = money.Money { minor: 5, currency: eur() };
+    let a = money.format(heap, five);
+    borrow a as &r in {
+        test.assert(bytes.equal(buffer.bytes(r), "0.05"));
+    }
+    buffer.drop(heap, a);
+    let big = money.Money { minor: 1234567, currency: eur() };
+    let b = money.format(heap, big);
+    borrow b as &r2 in {
+        test.assert(bytes.equal(buffer.bytes(r2), "12345.67"));
+    }
+    buffer.drop(heap, b);
+    return 0;
+}
+
+fn test_currencies_never_mix() -> [] int {
+    let a = money.Money { minor: 100, currency: eur() };
+    let b = money.Money { minor: 100, currency: money.currency_of("USD") };
+    let (s, c1) = money.add(a, b);
+    test.assert_eq(c1, money.r_currency_mismatch());
+    // The refused sum leaves the first operand as it was.
+    test.assert_eq(s.minor, 100);
+    let (d, c2) = money.sub(a, b);
+    test.assert_eq(c2, money.r_currency_mismatch());
+    let (o, c3) = money.compare(a, b);
+    test.assert_eq(c3, money.r_currency_mismatch());
+    return 0;
+}
+
+fn test_sums_and_differences_are_exact_and_checked() -> [] int {
+    let a = money.Money { minor: 1067, currency: eur() };
+    let b = money.Money { minor: 3148, currency: eur() };
+    let (s, c1) = money.add(a, b);
+    test.assert_eq(c1, 0);
+    // The Duffel offer from the fixture: 10.67 base + 31.48 tax is 42.15 total.
+    test.assert_eq(s.minor, 4215);
+    let (d, c2) = money.sub(b, a);
+    test.assert_eq(c2, 0);
+    test.assert_eq(d.minor, 2081);
+    let (n, c3) = money.sub(a, b);
+    test.assert_eq(c3, 0);
+    test.assert_eq(n.minor, 0 - 2081);
+    // Past the top and the bottom of an int.
+    let top = money.Money { minor: money.max_int(), currency: eur() };
+    let one = money.Money { minor: 1, currency: eur() };
+    let (t, c4) = money.add(top, one);
+    test.assert_eq(c4, money.r_overflow());
+    let bottom = money.Money { minor: 0 - money.max_int(), currency: eur() };
+    let (u, c5) = money.sub(bottom, one);
+    test.assert_eq(c5, money.r_overflow());
+    let (v, c6) = money.add(top, money.Money { minor: 0 - 1, currency: eur() });
+    test.assert_eq(c6, 0);
+    test.assert_eq(v.minor, money.max_int() - 1);
+    return 0;
+}
+
+fn test_comparison() -> [] int {
+    let a = money.Money { minor: 100, currency: eur() };
+    let b = money.Money { minor: 250, currency: eur() };
+    let (x, c1) = money.compare(a, b);
+    let (y, c2) = money.compare(b, a);
+    let (z, c3) = money.compare(a, a);
+    test.assert_eq(c1 + c2 + c3, 0);
+    test.assert_eq(x, 0 - 1);
+    test.assert_eq(y, 1);
+    test.assert_eq(z, 0);
+    return 0;
+}
+
+// The shares of a total always add up to it, differ by at most one minor unit, and the larger ones come first.
+fn test_a_split_adds_up_and_is_fair() -> [] int {
+    var total = 0 - 40;
+    while total <= 200 {
+        var parts = 1;
+        while parts <= 9 {
+            var sum = 0;
+            var biggest = 0 - 1000;
+            var smallest = 1000;
+            var previous = 0 - 1000;
+            var idx = 0;
+            while idx < parts {
+                let (s, code) = money.share(money.Money { minor: total, currency: eur() }, parts, idx);
+                test.assert_eq(code, 0);
+                sum = sum + s.minor;
+                if s.minor > biggest {
+                    biggest = s.minor;
+                }
+                if s.minor < smallest {
+                    smallest = s.minor;
+                }
+                // For a positive total the shares never grow along the index (the remainder is front-loaded).
+                if total >= 0 && idx > 0 {
+                    test.assert(s.minor <= previous);
+                }
+                previous = s.minor;
+                idx = idx + 1;
+            }
+            test.assert_eq(sum, total);
+            test.assert(biggest - smallest <= 1);
+            parts = parts + 1;
+        }
+        total = total + 1;
+    }
+    return 0;
+}
+
+fn test_the_remainder_goes_to_the_first_shares() -> [] int {
+    // 100 cents among 3: 34, 33, 33.
+    let t = money.Money { minor: 100, currency: eur() };
+    let (a, c1) = money.share(t, 3, 0);
+    let (b, c2) = money.share(t, 3, 1);
+    let (c, c3) = money.share(t, 3, 2);
+    test.assert_eq(c1 + c2 + c3, 0);
+    test.assert_eq(a.minor, 34);
+    test.assert_eq(b.minor, 33);
+    test.assert_eq(c.minor, 33);
+    // A refund of 100 among 3 is -34, -33, -33: the same split with the sign restored.
+    let r = money.Money { minor: 0 - 100, currency: eur() };
+    let (d, c4) = money.share(r, 3, 0);
+    test.assert_eq(c4, 0);
+    test.assert_eq(d.minor, 0 - 34);
+    return 0;
+}
+
+fn test_a_split_refuses_nonsense() -> [] int {
+    let t = money.Money { minor: 100, currency: eur() };
+    let (a, c1) = money.share(t, 0, 0);
+    test.assert_eq(c1, money.r_bad_split());
+    let (b, c2) = money.share(t, 3, 3);
+    test.assert_eq(c2, money.r_bad_split());
+    let (c, c3) = money.share(t, 3, 0 - 1);
+    test.assert_eq(c3, money.r_bad_split());
+    // The currency is kept even in a refusal.
+    test.assert_eq(a.currency, eur());
+    return 0;
+}

@@ -1,0 +1,279 @@
+edition 5;
+
+module money;
+
+import std.buffer;
+
+// `money` -- exact decimal money for cancho. An amount is an integer count of MINOR units (cents) and a currency; no
+// float is ever involved. The currency is an ISO 4217 alphabetic code packed into one int (`pack`: 'E','U','R' is
+// 0x455552), so a `Money` is a plain value that copies and compares.
+//
+// The minor-unit exponent comes from ISO 4217 (`exponent`): 2 for most currencies, 0 for JPY and KRW, 3 for KWD and
+// BHD, 4 for CLF. A decimal string is parsed exactly: more fractional digits than the exponent are accepted only if
+// they are zeros (a payment API's "10.670" is 10.67), never rounded away.
+//
+// Refusals are codes, not traps: a malformed amount or a mix of currencies in a booking system is an input problem,
+// not a bug in the caller.
+
+// Refusal codes.
+pub fn ok() -> [] int {
+    return 0;
+}
+
+// Not an amount: empty, a sign alone, no digits, a missing digit around the point, a character that is not a digit.
+pub fn r_malformed() -> [] int {
+    return 1;
+}
+
+// More fractional digits than the currency has, and not all zero: parsing would lose value.
+pub fn r_precision() -> [] int {
+    return 2;
+}
+
+// The amount does not fit in an int of minor units.
+pub fn r_overflow() -> [] int {
+    return 3;
+}
+
+// Two different currencies were mixed.
+pub fn r_currency_mismatch() -> [] int {
+    return 4;
+}
+
+// The currency text is not three uppercase letters.
+pub fn r_bad_currency() -> [] int {
+    return 5;
+}
+
+pub fn r_bad_split() -> [] int {
+    return 6;
+}
+
+pub struct Money {
+    minor: int,
+    currency: int,
+}
+
+// The largest int, built without overflowing on the way.
+pub fn max_int() -> [] int {
+    return (1 << 62) + ((1 << 62) - 1);
+}
+
+pub fn pack(a: int, b: int, c: int) -> [] int {
+    return a << 16 | b << 8 | c;
+}
+
+// The packed currency for three uppercase letters, or -1 if `text` is anything else.
+pub fn currency_of[&t](text: &t [byte]) -> [] int {
+    if len(text) != 3 {
+        return 0 - 1;
+    }
+    var i = 0;
+    while i < 3 {
+        let c = int_of(text[i]);
+        if c < 65 || c > 90 {
+            return 0 - 1;
+        }
+        i = i + 1;
+    }
+    return pack(int_of(text[0]), int_of(text[1]), int_of(text[2]));
+}
+
+// The three letters of a packed currency, one byte at a time: 0, 1 or 2.
+pub fn letter(currency: int, i: int) -> [] int {
+    return currency >> (2 - i) * 8 & 255;
+}
+
+// ISO 4217 minor units: 0, 2, 3 or 4 fractional digits. A code this table does not list has 2, the ISO default.
+pub fn exponent(currency: int) -> [] int {
+    // 0 digits
+    if currency == pack('B', 'I', 'F') || currency == pack('C', 'L', 'P') || currency == pack('D', 'J', 'F') || currency == pack('G', 'N', 'F') || currency == pack('I', 'S', 'K') || currency == pack('J', 'P', 'Y') {
+        return 0;
+    }
+    if currency == pack('K', 'M', 'F') || currency == pack('K', 'R', 'W') || currency == pack('P', 'Y', 'G') || currency == pack('R', 'W', 'F') || currency == pack('U', 'G', 'X') || currency == pack('U', 'Y', 'I') {
+        return 0;
+    }
+    if currency == pack('V', 'N', 'D') || currency == pack('V', 'U', 'V') || currency == pack('X', 'A', 'F') || currency == pack('X', 'O', 'F') || currency == pack('X', 'P', 'F') {
+        return 0;
+    }
+    // 3 digits
+    if currency == pack('B', 'H', 'D') || currency == pack('I', 'Q', 'D') || currency == pack('J', 'O', 'D') || currency == pack('K', 'W', 'D') || currency == pack('L', 'Y', 'D') || currency == pack('O', 'M', 'R') || currency == pack('T', 'N', 'D') {
+        return 3;
+    }
+    // 4 digits
+    if currency == pack('C', 'L', 'F') || currency == pack('U', 'Y', 'W') {
+        return 4;
+    }
+    return 2;
+}
+
+fn pow10(n: int) -> [] int {
+    var p = 1;
+    var i = 0;
+    while i < n {
+        p = p * 10;
+        i = i + 1;
+    }
+    return p;
+}
+
+// Parse a decimal amount such as "42.15", "-0.5" or "1000" in `currency`. Answers the amount and 0, or a zero amount
+// and a refusal. Strict: an optional '-', then digits, then optionally '.' and digits (a point needs digits on both
+// sides). Fractional digits beyond the currency's exponent must all be '0'.
+pub fn parse[&t](text: &t [byte], currency: int) -> [] (Money, int) {
+    let zero = Money { minor: 0, currency: currency };
+    if currency < 0 {
+        return (zero, r_bad_currency());
+    }
+    let e = exponent(currency);
+    var i = 0;
+    var negative = false;
+    if len(text) > 0 && int_of(text[0]) == 45 {
+        negative = true;
+        i = 1;
+    }
+    // The whole part.
+    var whole = 0;
+    var whole_digits = 0;
+    var too_big = false;
+    while i < len(text) && int_of(text[i]) >= 48 && int_of(text[i]) <= 57 {
+        let d = int_of(text[i]) - 48;
+        if whole > (max_int() - d) / 10 {
+            too_big = true;
+        } else {
+            whole = whole * 10 + d;
+        }
+        whole_digits = whole_digits + 1;
+        i = i + 1;
+    }
+    if whole_digits == 0 {
+        return (zero, r_malformed());
+    }
+    // The fractional part.
+    var frac = 0;
+    var frac_digits = 0;
+    var lost = false;
+    if i < len(text) {
+        if int_of(text[i]) != 46 {
+            return (zero, r_malformed());
+        }
+        i = i + 1;
+        let start = i;
+        while i < len(text) && int_of(text[i]) >= 48 && int_of(text[i]) <= 57 {
+            let d = int_of(text[i]) - 48;
+            if frac_digits < e {
+                frac = frac * 10 + d;
+            } else if d != 0 {
+                lost = true;
+            }
+            frac_digits = frac_digits + 1;
+            i = i + 1;
+        }
+        if i == start || i != len(text) {
+            return (zero, r_malformed());
+        }
+    }
+    if lost {
+        return (zero, r_precision());
+    }
+    // "1.5" in a 2-digit currency is 150: pad the fraction up to the exponent.
+    var padded = frac;
+    var k = frac_digits;
+    while k < e {
+        padded = padded * 10;
+        k = k + 1;
+    }
+    let scale = pow10(e);
+    if too_big || whole > (max_int() - padded) / scale {
+        return (zero, r_overflow());
+    }
+    let magnitude = whole * scale + padded;
+    if negative {
+        return (Money { minor: 0 - magnitude, currency: currency }, ok());
+    }
+    return (Money { minor: magnitude, currency: currency }, ok());
+}
+
+// `a + b`: the sum and 0, or `a` and a refusal (mixed currencies, or a sum past an int).
+pub fn add(a: Money, b: Money) -> [] (Money, int) {
+    if a.currency != b.currency {
+        return (a, r_currency_mismatch());
+    }
+    if b.minor > 0 && a.minor > max_int() - b.minor || b.minor < 0 && a.minor < 0 - max_int() - b.minor {
+        return (a, r_overflow());
+    }
+    return (Money { minor: a.minor + b.minor, currency: a.currency }, ok());
+}
+
+// `a - b`.
+pub fn sub(a: Money, b: Money) -> [] (Money, int) {
+    if a.currency != b.currency {
+        return (a, r_currency_mismatch());
+    }
+    if b.minor == 0 - max_int() - 1 {
+        return (a, r_overflow());
+    }
+    return add(a, Money { minor: 0 - b.minor, currency: b.currency });
+}
+
+// -1, 0 or 1 comparing `a` with `b`, and 0, or 0 and a refusal for mixed currencies.
+pub fn compare(a: Money, b: Money) -> [] (int, int) {
+    if a.currency != b.currency {
+        return (0, r_currency_mismatch());
+    }
+    if a.minor < b.minor {
+        return (0 - 1, ok());
+    }
+    if a.minor > b.minor {
+        return (1, ok());
+    }
+    return (0, ok());
+}
+
+// The decimal text of `m`, as `parse` reads it: "42.15", "-0.05", "1000" for a currency with no fraction.
+pub fn format[&h](heap: &!h Heap, m: Money) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 16);
+    let e = exponent(m.currency);
+    var magnitude = m.minor;
+    if m.minor < 0 {
+        b = buffer.push(heap, b, byte_of('-'));
+        magnitude = 0 - m.minor;
+    }
+    let scale = pow10(e);
+    b = buffer.push_nat(heap, b, magnitude / scale);
+    if e > 0 {
+        b = buffer.push(heap, b, byte_of('.'));
+        let frac = magnitude % scale;
+        var digit = scale / 10;
+        while digit > 0 {
+            b = buffer.push(heap, b, byte_of('0' + frac / digit % 10));
+            digit = digit / 10;
+        }
+    }
+    return b;
+}
+
+// The `index`th of `parts` shares of `total` minor units, `index` counted from 0. The shares add up to `total`
+// exactly and differ by at most one minor unit: the first `total % parts` shares are the larger ones, so a split is
+// deterministic and nobody is shorted by rounding. Answers the share and 0, or 0 and `r_bad_split` for `parts < 1`
+// or an index outside 0..parts.
+pub fn share(total: Money, parts: int, index: int) -> [] (Money, int) {
+    if parts < 1 || index < 0 || index >= parts {
+        return (Money { minor: 0, currency: total.currency }, r_bad_split());
+    }
+    // Work on the magnitude so that a negative total (a refund) splits the same way, then restore the sign.
+    var magnitude = total.minor;
+    var negative = false;
+    if total.minor < 0 {
+        negative = true;
+        magnitude = 0 - total.minor;
+    }
+    var mine = magnitude / parts;
+    if index < magnitude % parts {
+        mine = mine + 1;
+    }
+    if negative {
+        mine = 0 - mine;
+    }
+    return (Money { minor: mine, currency: total.currency }, ok());
+}
