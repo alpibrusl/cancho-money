@@ -290,3 +290,50 @@ fn test_a_split_refuses_nonsense() -> [] int {
     test.assert_eq(a.currency, eur());
     return 0;
 }
+
+fn test_a_quantity_of_identical_items() -> [] int {
+    let bag = money.Money { minor: 2000, currency: eur() };
+    let (a, c1) = money.times(bag, 2);
+    test.assert_eq(c1, 0);
+    test.assert_eq(a.minor, 4000);
+    test.assert_eq(a.currency, eur());
+    let (b, c2) = money.times(bag, 0);
+    test.assert_eq(c2, 0);
+    test.assert_eq(b.minor, 0);
+    // A zero product is still an amount of the same currency, so it can be added to others.
+    test.assert_eq(b.currency, eur());
+    let (c, c3) = money.times(bag, 1);
+    test.assert_eq(c.minor, 2000);
+    // Signs: a refund of three, and a negative price (a credit) times a negative count.
+    let (d, c4) = money.times(bag, 0 - 3);
+    test.assert_eq(d.minor, 0 - 6000);
+    let credit = money.Money { minor: 0 - 500, currency: eur() };
+    let (e, c5) = money.times(credit, 4);
+    test.assert_eq(e.minor, 0 - 2000);
+    let (f, c6) = money.times(credit, 0 - 4);
+    test.assert_eq(f.minor, 2000);
+    test.assert_eq(c4 + c5 + c6 + c3, 0);
+    return 0;
+}
+
+fn test_a_product_past_an_int_is_refused_not_wrapped() -> [] int {
+    let big = money.Money { minor: money.max_int() / 2 + 1, currency: eur() };
+    let (a, c1) = money.times(big, 2);
+    test.assert_eq(c1, money.r_overflow());
+    // The refused product leaves the operand as it was.
+    test.assert_eq(a.minor, big.minor);
+    let (b, c2) = money.times(big, 1);
+    test.assert_eq(c2, 0);
+    let half = money.Money { minor: money.max_int() / 2, currency: eur() };
+    let (c, c3) = money.times(half, 2);
+    test.assert_eq(c3, 0);
+    test.assert_eq(c.minor, money.max_int() - 1);
+    let (d, c4) = money.times(half, 3);
+    test.assert_eq(c4, money.r_overflow());
+    let (e, c5) = money.times(half, 0 - 3);
+    test.assert_eq(c5, money.r_overflow());
+    // Zero never overflows, whatever the other factor.
+    let (f, c6) = money.times(big, 0);
+    test.assert_eq(c6, 0);
+    return 0;
+}

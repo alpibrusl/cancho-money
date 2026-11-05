@@ -2,7 +2,7 @@
 
 Exact decimal monetary arithmetic for [cancho](https://github.com/alpibrusl/cancho): an amount is an integer count of minor units plus an ISO 4217 currency. No floats, no silent rounding, and mixing currencies is refused. Sibling for Lex: [lex-money](https://github.com/alpibrusl/lex-money).
 
-**Status: alpha.** `src/money.cho`, 14 tests.
+**Status: alpha.** `src/money.cho`, 16 tests.
 
 ```cancho
 let (price, code) = money.parse("42.15", money.currency_of("EUR"));   // 4215 minor units
@@ -13,7 +13,7 @@ let (mine, code3) = money.share(sum, 3, 0);                            // 8430 a
 
 * **`parse`** reads `"42.15"`, `"-0.5"`, `"1000"` exactly. Fractional digits beyond the currency's exponent are accepted only if they are zeros (`"10.670"` is 10.67); `"10.675"` is refused (`r_precision`), never rounded. Strict grammar: an optional `-`, digits, and optionally `.` with digits on both sides.
 * **Exponents** follow ISO 4217: 0 for JPY, KRW and the other whole-unit currencies, 3 for KWD, BHD and friends, 4 for CLF, else 2.
-* **`add`, `sub`, `compare`** refuse mixed currencies (`r_currency_mismatch`) and a result past an int (`r_overflow`).
+* **`times(m, n)`** multiplies by a whole quantity (refused on overflow). **`add`, `sub`, `compare`** refuse mixed currencies (`r_currency_mismatch`) and a result past an int (`r_overflow`).
 * **`share(total, parts, index)`** splits a total so the shares add up exactly and differ by at most one minor unit; the first `total % parts` shares are larger. A negative total (a refund) splits the same way.
 * **`format`** is the inverse of `parse`.
 

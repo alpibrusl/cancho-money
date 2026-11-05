@@ -216,6 +216,30 @@ pub fn sub(a: Money, b: Money) -> [] (Money, int) {
     return add(a, Money { minor: 0 - b.minor, currency: b.currency });
 }
 
+// `m` times a whole number `n` (a quantity of identical items): the product and 0, or `m` and `r_overflow` when it does
+// not fit. `n` may be zero or negative (a refund of several items).
+pub fn times(m: Money, n: int) -> [] (Money, int) {
+    if n == 0 || m.minor == 0 {
+        return (Money { minor: 0, currency: m.currency }, ok());
+    }
+    var magnitude = m.minor;
+    if magnitude < 0 {
+        magnitude = 0 - magnitude;
+    }
+    var count = n;
+    if count < 0 {
+        count = 0 - count;
+    }
+    if magnitude > max_int() / count {
+        return (m, r_overflow());
+    }
+    var product = magnitude * count;
+    if m.minor < 0 != n < 0 {
+        product = 0 - product;
+    }
+    return (Money { minor: product, currency: m.currency }, ok());
+}
+
 // -1, 0 or 1 comparing `a` with `b`, and 0, or 0 and a refusal for mixed currencies.
 pub fn compare(a: Money, b: Money) -> [] (int, int) {
     if a.currency != b.currency {
